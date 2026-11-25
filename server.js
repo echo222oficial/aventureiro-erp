@@ -357,7 +357,8 @@ rota('GET', '/api/docs/(\\d+)', (c, b, req, m) => {
   const o = docOut(d); delete o.xml; o.tem_xml = !!d.xml;
   o.cliente = d.cliente_id ? q1('SELECT * FROM clientes WHERE id=?', d.cliente_id) : null;
   o.natureza = d.natureza_id ? q1('SELECT * FROM naturezas WHERE id=?', d.natureza_id) : null;
-  o.empresa = c.emp; if (d.kind === 'nfe') { const r = checaNfe(c, d); o.faltas = r.faltas; o.avisos = r.avisos; o.cfop = cfopDe(o.natureza, c.emp.uf, o.cliente && o.cliente.uf); }
+  o.empresa = c.emp; if (d.kind === 'nfe') { const r = checaNfe(c, d); o.faltas = r.faltas; o.avisos = r.avisos; o.cfop = cfopDe(o.natureza, c.emp.uf, o.cliente && o.cliente.uf);
+    o.icms = o.itens.map(i => { const r = o.cliente ? q1('SELECT aliquota FROM icms_regras WHERE empresa_id=? AND uf_origem=? AND uf_destino=? AND (grupo_fiscal=? OR grupo_fiscal IS NULL OR grupo_fiscal="") ORDER BY (grupo_fiscal=?) DESC LIMIT 1', c.emp.id, c.emp.uf, o.cliente.uf, i.grupo_fiscal || '', i.grupo_fiscal || '') : null; const al = r && r.aliquota != null ? r.aliquota : null; return { aliq: al, v: al == null ? null : arred(i.subtotal * al / 100) }; }); }
   return o;
 });
 rota('POST', '/api/docs', (c, b) => { exige(c, 'vendas'); const k = b.kind; if (!['orc', 'ped', 'nfe'].includes(k)) throw new Erro('Tipo de documento inválido.'); return { id: salvaDoc(c, k, b) }; });

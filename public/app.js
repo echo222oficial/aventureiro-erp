@@ -203,7 +203,7 @@ async function viewDoc(main, kind, id) {
   ${kind === 'nfe' ? `<div class="fld"><label>Natureza da operação</label><select id="nat" ${trava ? 'disabled' : ''}><option value="">— escolha —</option>${opt(nats, d.natureza_id, n => n.nome + (n.validado ? '' : ' (pendente)'))}</select></div>` : `<div class="fld"><label>Natureza da operação</label><select id="nat" ${trava ? 'disabled' : ''}><option value="">— opcional —</option>${opt(nats, d.natureza_id, n => n.nome)}</select></div>`}</div>
   ${clientes.length ? '' : '<div class="aviso">Você ainda não tem clientes. Cadastre em <a href="#/clientes">Clientes</a> ou use os dados de exemplo no Painel.</div>'}
   ${kind === 'nfe' && d.cfop !== undefined ? `<p class="mut">CFOP aplicado: <b>${esc(d.cfop || 'A VALIDAR')}</b> ${d.cliente && S.emp.uf ? (d.cliente.uf === S.emp.uf ? '(operação interna)' : '(operação interestadual)') : ''}</p>` : ''}</div>
-  <h3 style="margin-top:1rem">Produtos</h3><div class="card"><div class="itens" id="itens"></div>${trava ? '' : '<button class="btn sm" id="add">+ Adicionar item</button>'}<datalist id="dlp">${prods.map(p => `<option value="${esc(p.sku + ' — ' + p.descricao)}"></option>`).join('')}</datalist>
+  <h3 style="margin-top:1rem">Produtos</h3><div class="card"><div class="itens" id="itens"></div>${trava ? '' : '<div class="row"><button class="btn sm" id="add">+ Adicionar item</button><button class="btn sm" id="impit">Importar itens de planilha</button><span class="mut" style="font-size:.75rem">Colunas: SKU ou Descrição, Quantidade, Preço (Excel ou CSV)</span></div>'}<datalist id="dlp">${prods.map(p => `<option value="${esc(p.sku + ' — ' + p.descricao)}"></option>`).join('')}</datalist>
   ${prods.length ? '' : '<div class="aviso">Nenhum produto cadastrado. Cadastre em <a href="#/produtos">Produtos</a>.</div>'}</div>
   <div class="totais"><span class="mut">Itens: <b id="tIt">0</b></span>${kind === 'nfe' ? '<span class="mut">Frete: <b id="tFr">R$ 0,00</b></span>' : ''}<span>Total: <b class="kpi" id="tTot">R$ 0,00</b></span></div>
   ${kind === 'nfe' || kind === 'ped' ? `<h3>Transporte (dentro da nota)</h3><div class="card"><div class="grid g2">
@@ -227,6 +227,31 @@ async function viewDoc(main, kind, id) {
     const sub = $('.sub', r); if (sub) sub.textContent = money(num(x.qtd) * num(x.preco)); totais(); });
   itensEl.addEventListener('click', e => { if (e.target.classList.contains('ir')) { it.splice(+e.target.closest('.it').dataset.n, 1); if (!it.length) it.push({ descricao: '', qtd: 1, preco: '' }); desItens(); } });
   if ($('#add', main)) $('#add', main).onclick = () => { it.push({ descricao: '', qtd: 1, preco: '' }); desItens(); };
+  if ($('#impit', main)) $('#impit', main).onclick = () => {
+    const fi = document.createElement('input'); fi.type = 'file'; fi.accept = '.csv,.txt,.xlsx,.xls';
+    fi.onchange = async () => {
+      const f = fi.files[0]; if (!f) return; const buf = await f.arrayBuffer(); let objs;
+      try {
+        if (/\.xlsx?$/i.test(f.name)) { if (typeof XLSX === 'undefined') return toast('Leitor de planilhas indisponível (internet?). Use CSV.', 'bad'); const wb = XLSX.read(buf, { type: 'array' }); objs = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { defval: '' }); }
+        else { let t = new TextDecoder('utf-8').decode(buf); if (t.includes('\ufffd')) t = new TextDecoder('windows-1252').decode(buf); const rows = parseCSV(t); const hd = rows[0]; objs = rows.slice(1).map(r => Object.fromEntries(hd.map((h, i) => [h, r[i]]))); }
+      } catch { return toast('Não consegui ler a planilha. Use Excel (.xlsx) ou CSV.', 'bad'); }
+      const g = (o, nomes) => { for (const k of Object.keys(o)) if (nomes.includes(norm(k))) return o[k]; return ''; };
+      let ok = 0; const av = []; const novos = [];
+      objs.forEach((o, n) => {
+        const sku = String(g(o, ['sku', 'codigo', 'cod'])).trim(), desc = String(g(o, ['descricao', 'produto', 'nome'])).trim(), qtd = g(o, ['qtd', 'quantidade', 'qtde']), pr = g(o, ['preco', 'precounitario', 'valor', 'precodevenda', 'vunit']);
+        if (!sku && !desc) return;
+        if (!(num(qtd) > 0)) { av.push(`Linha ${n + 2}: quantidade inválida, linha ignorada.`); return; }
+        const p = prods.find(p => (sku && String(p.sku).toLowerCase() === sku.toLowerCase()) || (!sku && desc && p.descricao.toLowerCase() === desc.toLowerCase()));
+        if (p) novos.push({ produto_id: p.id, sku: p.sku, descricao: p.descricao, un: p.un, ncm: p.ncm, qtd: num(qtd), preco: pr !== '' ? num(pr) : (p.preco ?? '') });
+        else { av.push(`Linha ${n + 2}: "${sku || desc}" não está cadastrado; entrou como item livre (sem baixa de estoque).`); novos.push({ descricao: desc || sku, qtd: num(qtd), preco: num(pr) }); }
+        ok++;
+      });
+      if (!ok) return toast('Nenhuma linha válida. Confira o cabeçalho: SKU ou Descrição, Quantidade, Preço.', 'bad');
+      it = it.filter(x => x.produto_id || (x.descricao && x.descricao !== '')).concat(novos); desItens();
+      toast(`${ok} itens importados da planilha. Confira antes de salvar.`, 'ok');
+      if (av.length) modal({ titulo: 'Avisos da importação', corpo: `<ul>${av.slice(0, 30).map(x => `<li>${esc(x)}</li>`).join('')}</ul>` });
+    }; fi.click();
+  };
   if ($('#fr_vf', main)) $('#fr_vf', main).oninput = totais;
   desItens();
   const coleta = () => ({ kind, cliente_id: $('#cli', main).value || null, natureza_id: $('#nat', main).value || null, data: $('#data', main).value, obs: $('#obs', main).value, itens: it, origem_id: d.origem_id,
@@ -253,6 +278,7 @@ async function viewDoc(main, kind, id) {
 }
 async function viewDanfe(main, id) {
   const d = await api('/docs/' + id), e = d.empresa, c = d.cliente || {}, n = d.natureza || {}, fr = d.frete || {}, pg = d.pagamento || {}; if (d.kind !== 'nfe') return main.innerHTML = '<p>Só notas têm DANFE.</p>';
+  const ic = d.icms || []; const baseIc = d.itens.reduce((s, i, k) => s + (ic[k] && ic[k].aliq != null ? i.subtotal : 0), 0), valIc = ic.reduce((s, x) => s + (x && x.v || 0), 0), temIc = ic.some(x => x && x.aliq != null);
   const emit = d.status === 'emitida'; const prod = d.itens.reduce((s, i) => s + i.subtotal, 0), vf = num(fr.valor_frete);
   const parc = Math.max(1, parseInt(pg.parcelas) || 1); const dup = []; for (let p = 0; p < parc; p++) { const dt = new Date((pg.primeiro_venc || hoje()) + 'T12:00:00Z'); dt.setUTCMonth(dt.getUTCMonth() + p); dup.push(`<span class="bx" style="display:inline-block">${p + 1}/${parc} — ${fdate(dt.toISOString().slice(0, 10))} — ${money(d.total / parc)}</span>`); }
   const B = (l, v, w = '') => `<div class="bx" style="${w ? 'width:' + w : 'flex:1'}"><small>${l}</small><b>${esc(v) || '&nbsp;'}</b></div>`;
@@ -266,9 +292,9 @@ async function viewDanfe(main, id) {
   <div class="tt">DESTINATÁRIO / REMETENTE</div><div class="gr">${B('Nome / razão social', c.razao, '60%')}${B('CNPJ / CPF', fcnpj(c.doc))}${B('Data de emissão', fdate(d.data))}</div>
   <div class="gr">${B('Endereço', [c.endereco, c.numero, c.bairro].filter(Boolean).join(', '), '50%')}${B('Município', c.cidade)}${B('UF', c.uf)}${B('Insc. estadual', c.ie)}</div>
   <div class="tt">FATURA / DUPLICATAS</div><div style="padding:3px">${dup.join(' ')} <span class="mut">(${esc(pg.forma || 'forma a definir')})</span></div>
-  <div class="tt">CÁLCULO DO IMPOSTO</div><div class="gr">${B('Base cálc. ICMS', 'A VALIDAR')}${B('Valor ICMS', 'A VALIDAR')}${B('Valor dos produtos', money(prod))}${B('Valor do frete', money(vf))}${B('Valor total da nota', money(d.total))}</div>
+  <div class="tt">CÁLCULO DO IMPOSTO</div><div class="gr">${B('Base cálc. ICMS', temIc ? money(baseIc) : 'A VALIDAR')}${B('Valor ICMS', temIc ? money(valIc) : 'A VALIDAR')}${B('Valor dos produtos', money(prod))}${B('Valor do frete', money(vf))}${B('Valor total da nota', money(d.total))}</div>
   <div class="tt">TRANSPORTADOR / VOLUMES</div><div class="gr">${B('Transportadora', fr.transportadora, '35%')}${B('Frete por conta', { 0: '0-Emitente', 1: '1-Destinatário', 2: '2-Terceiros', 9: '9-Sem frete' }[fr.modalidade || 9])}${B('Placa', fr.placa)}${B('Volumes', fr.volumes)}${B('Peso bruto', fr.peso_b)}${B('Peso líquido', fr.peso_l)}</div>
-  <div class="tt">DADOS DOS PRODUTOS / SERVIÇOS</div><table><tr><th>Cód.</th><th>Descrição</th><th>NCM</th><th>CST</th><th>CFOP</th><th>UN</th><th>Qtd</th><th>V. unit.</th><th>V. total</th></tr>${d.itens.map(i => `<tr><td>${esc(i.sku)}</td><td>${esc(i.descricao)}</td><td>${esc(i.ncm || 'A VALIDAR')}</td><td>${esc(n.cst || 'A VALIDAR')}</td><td>${esc(d.cfop || 'A VALIDAR')}</td><td>${esc(i.un)}</td><td>${i.qtd}</td><td>${money(i.preco)}</td><td>${money(i.subtotal)}</td></tr>`).join('')}</table>
+  <div class="tt">DADOS DOS PRODUTOS / SERVIÇOS</div><table><tr><th>Cód.</th><th>Descrição</th><th>NCM</th><th>CST</th><th>CFOP</th><th>UN</th><th>Qtd</th><th>V. unit.</th><th>V. total</th><th>Alíq. ICMS</th><th>V. ICMS</th></tr>${d.itens.map((i, k) => `<tr><td>${esc(i.sku)}</td><td>${esc(i.descricao)}</td><td>${esc(i.ncm || 'A VALIDAR')}</td><td>${esc(n.cst || 'A VALIDAR')}</td><td>${esc(d.cfop || 'A VALIDAR')}</td><td>${esc(i.un)}</td><td>${i.qtd}</td><td>${money(i.preco)}</td><td>${money(i.subtotal)}</td><td>${ic[k] && ic[k].aliq != null ? ic[k].aliq + '%' : 'A VALIDAR'}</td><td>${ic[k] && ic[k].v != null ? money(ic[k].v) : 'A VALIDAR'}</td></tr>`).join('')}</table>
   <div class="tt">DADOS ADICIONAIS</div><div class="bx" style="min-height:50px">SEM VALOR FISCAL - DEMONSTRAÇÃO. ${esc(d.obs)}</div></div>`;
   $('#pr', main).onclick = () => window.print();
 }
