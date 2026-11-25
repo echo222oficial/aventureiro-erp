@@ -326,6 +326,20 @@ rota('POST', '/api/naturezas/(\\d+)/validar', (c, b, req, m) => {
 rota('POST', '/api/chamados/(\\d+)/responder', (c, b, req, m) => {
   exige(c, 'suporte'); exec('UPDATE chamados SET resposta=?,status=? WHERE id=? AND empresa_id=?', String(b.resposta || ''), b.fechar ? 'fechado' : 'respondido', m[1], c.emp.id); audit(c, 'Chamado respondido', '#' + m[1]); return { ok: true };
 });
+rota('POST', '/api/tabelas/oficiais', async (c, b) => {
+  exige(c, 'fiscal');
+  const base = process.env.TABELAS_URL || 'https://echo222.com/testedesistema/data/';
+  const baixa = async f => { try { const r = await fetch(base + f, { signal: AbortSignal.timeout(60000) }); if (!r.ok) throw 0; return await r.json(); } catch { throw new Erro('Não consegui baixar a tabela oficial agora. Tente de novo em alguns minutos ou importe o arquivo manualmente.', 502); } };
+  let linhas, tab;
+  if (b.tipo === 'ncm') { tab = 'ncm_tab'; const j = await baixa('ncm-vigente-2026-11-10.json'); linhas = (j.Nomenclaturas || []).map(x => ({ codigo: soNum(x.Codigo), descricao: String(x.Descricao || '').replace(/^[-\s]+/, '').trim() })).filter(x => x.codigo.length === 8); }
+  else if (b.tipo === 'cfop') { tab = 'cfop_tab'; const j = await baixa('cfop-vigente-2026-09-04-v2.10.json'); linhas = (j.records || []).filter(r => !r.end).map(r => ({ codigo: String(r.code), descricao: String(r.title || '').trim() })); }
+  else throw new Erro('Tabela desconhecida.');
+  if (!linhas.length) throw new Erro('A tabela baixada veio vazia. Nada foi alterado.', 502);
+  const ex = new Set(q(`SELECT codigo FROM ${tab} WHERE empresa_id=?`, c.emp.id).map(x => x.codigo)); let n = 0;
+  db.exec('BEGIN');
+  try { for (const l of linhas) { if (ex.has(l.codigo)) continue; run(`INSERT INTO ${tab}(empresa_id,criado,codigo,descricao) VALUES(?,?,?,?)`, c.emp.id, agora(), l.codigo, l.descricao); n++; } db.exec('COMMIT'); } catch (e) { db.exec('ROLLBACK'); throw e; }
+  audit(c, 'Tabela oficial carregada', `${b.tipo}: ${n} códigos novos`); return { novos: n, total: linhas.length };
+});
 rota('GET', '/api/ncm/buscar', (c, b, req, m, url) => {
   const t = String(url.searchParams.get('q') || '').trim(); if (!t) return [];
   const n = q1('SELECT COUNT(*) n FROM ncm_tab WHERE empresa_id=?', c.emp.id).n;
@@ -479,7 +493,7 @@ const server = http.createServer(async (req, res) => {
         c.emp = q1('SELECT * FROM empresas WHERE id=?', eid); c.perfil = mem.perfil;
       }
       const b = ['POST', 'PUT'].includes(req.method) ? await lerCorpo(req) : {};
-      const r = achou(c, b, req, m, url);
+      const r = await achou(c, b, req, m, url);
       const h = { ...SEC, 'Cache-Control': 'no-store' };
       if (c.setUser) { const t = crypto.randomBytes(32).toString('hex'); run('INSERT INTO sessions VALUES(?,?,?)', t, c.setUser, agora()); h['Set-Cookie'] = `sid=${t}; Path=/; HttpOnly; SameSite=Lax; Max-Age=2592000${req.headers['x-forwarded-proto'] === 'https' ? '; Secure' : ''}`; }
       if (c.clearCookie) h['Set-Cookie'] = 'sid=; Path=/; HttpOnly; Max-Age=0';

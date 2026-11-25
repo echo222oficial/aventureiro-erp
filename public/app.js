@@ -61,8 +61,8 @@ const ENTS = {
   naturezas: { t: 'Naturezas de operação', area: 'fiscal', cols: [['nome', 'Natureza'], ['cfop_interno', 'CFOP interno'], ['cfop_inter', 'CFOP interestadual'], ['validado', 'Situação', v => v ? '✔ validado' : 'PENDENTE DE VALIDAÇÃO CONTÁBIL']],
     f: [T('nome', 'Nome da natureza', { r: 1 }), T('tipo', 'Tipo/observação interna'), T('cfop_interno', 'CFOP interno (mesma UF)', { cfop: 1 }), T('cfop_inter', 'CFOP interestadual', { cfop: 1 }), T('cfop_exterior', 'CFOP exterior', { cfop: 1 }), T('cst', 'CST / CSOSN (você define)'), { k: 'obs', l: 'Observações padrão', t: 'textarea' }],
     aviso: 'O sistema não sugere CFOP nem impostos. Preencha com orientação do contador. Todo cenário nasce como PENDENTE DE VALIDAÇÃO CONTÁBIL e só é validado por Administrador ou Contador.' },
-  ncm_tab: { t: 'Tabela NCM', area: 'fiscal', imp: true, cols: [['codigo', 'Código'], ['descricao', 'Descrição']], f: [T('codigo', 'Código NCM (8 dígitos)', { r: 1 }), T('descricao', 'Descrição')], aviso: 'Importe a tabela oficial (CSV ou JSON com as colunas Código e Descrição). O sistema não traz NCM inventado.' },
-  cfop_tab: { t: 'Tabela CFOP', area: 'fiscal', imp: true, cols: [['codigo', 'Código'], ['descricao', 'Descrição']], f: [T('codigo', 'Código CFOP', { r: 1 }), T('descricao', 'Descrição')], aviso: 'Importe a tabela oficial de CFOP (CSV ou JSON com Código e Descrição).' },
+  ncm_tab: { t: 'Tabela NCM', area: 'fiscal', imp: true, oficial: 'ncm', cols: [['codigo', 'Código'], ['descricao', 'Descrição']], f: [T('codigo', 'Código NCM (8 dígitos)', { r: 1 }), T('descricao', 'Descrição')], aviso: 'Importe a tabela oficial (CSV ou JSON com as colunas Código e Descrição). O sistema não traz NCM inventado.' },
+  cfop_tab: { t: 'Tabela CFOP', area: 'fiscal', imp: true, oficial: 'cfop', cols: [['codigo', 'Código'], ['descricao', 'Descrição']], f: [T('codigo', 'Código CFOP', { r: 1 }), T('descricao', 'Descrição')], aviso: 'Importe a tabela oficial de CFOP (CSV ou JSON com Código e Descrição).' },
   icms_regras: { t: 'Editor de ICMS', area: 'fiscal', cols: [['uf_origem', 'UF origem'], ['uf_destino', 'UF destino'], ['grupo_fiscal', 'Grupo fiscal'], ['aliquota', 'Alíquota %'], ['obs', 'Obs.']],
     f: [SEL('uf_origem', 'UF de origem', UFS, { r: 1 }), SEL('uf_destino', 'UF de destino', UFS, { r: 1 }), T('grupo_fiscal', 'Grupo fiscal (vazio = todos)'), { k: 'aliquota', l: 'Alíquota ICMS % (definida por você)', t: 'number' }, T('obs', 'Observação')],
     aviso: 'As alíquotas são SOMENTE as que você digitar. O sistema não sugere valores. Sem regra cadastrada, o ICMS aparece como "A VALIDAR" na nota.' },
@@ -97,13 +97,16 @@ function toCSV(rows, cols) { const q = v => '"' + String(v ?? '').replace(/"/g, 
 function baixa(nome, txt, tipo = 'text/csv;charset=utf-8') { const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([txt], { type: tipo })); a.download = nome; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 5000); }
 
 async function importar(nome, onFim) {
-  const E = ENTS[nome]; const fi = document.createElement('input'); fi.type = 'file'; fi.accept = '.csv,.txt,.json';
+  const E = ENTS[nome]; const fi = document.createElement('input'); fi.type = 'file'; fi.accept = '.csv,.txt,.json,.xlsx,.xls';
   fi.onchange = async () => {
     const file = fi.files[0]; if (!file) return;
     let buf = await file.arrayBuffer(), txt = new TextDecoder('utf-8').decode(buf); if (txt.includes('�')) txt = new TextDecoder('windows-1252').decode(buf);
     let objs = [];
     try {
-      if (file.name.toLowerCase().endsWith('.json') || /^\s*[\[{]/.test(txt)) {
+      if (/\.xlsx?$/i.test(file.name)) {
+        if (typeof XLSX === 'undefined') return toast('Não consegui carregar o leitor de planilhas (internet?). Use CSV por enquanto.', 'bad');
+        const wb = XLSX.read(buf, { type: 'array' }); objs = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { defval: '' }).map(o => { const r = {}; for (const [k, v] of Object.entries(o)) r[norm(k)] = v; return r; });
+      } else if (file.name.toLowerCase().endsWith('.json') || /^\s*[\[{]/.test(txt)) {
         let j = JSON.parse(txt); if (!Array.isArray(j)) j = Object.values(j).find(Array.isArray) || [];
         objs = j.map(o => { const r = {}; for (const [k, v] of Object.entries(o)) r[norm(k)] = v; return r; });
       } else {
@@ -133,11 +136,13 @@ async function viewEnt(main, nome) {
     $('#cnt', main).textContent = `${l.length} registro(s)${l.length > 300 ? ' (mostrando 300 — use a busca)' : ''}`;
     $$('tr.cl', main).forEach(tr => tr.onclick = () => form(rows.find(x => x.id == tr.dataset.id)));
   };
-  main.innerHTML = `<div class="row"><h1 class="sp">${E.t}</h1>${edita ? '<button class="btn gold" id="novo">+ Novo</button>' : ''}${E.imp && edita ? '<button class="btn" id="imp">Importar</button>' : ''}<button class="btn" id="exp">Exportar CSV</button></div>
+  main.innerHTML = `<div class="row"><h1 class="sp">${E.t}</h1>${edita ? '<button class="btn gold" id="novo">+ Novo</button>' : ''}${E.imp && edita ? '<button class="btn" id="imp">Importar</button>' : ''}<button class="btn" id="exp">Exportar CSV</button><button class="btn" id="expx">Exportar Excel</button>${E.oficial && edita ? '<button class="btn gold" id="of">Carregar tabela oficial</button>' : ''}</div>
   ${E.aviso ? `<div class="aviso">${esc(E.aviso)}</div>` : ''}<div class="fld"><input id="busca" placeholder="Buscar…"></div><div class="tw"><table><tr>${E.cols.map(c => `<th>${esc(c[1])}</th>`).join('')}</tr><tbody id="tb"></tbody></table></div><p class="mut" id="cnt"></p>`;
   const recarrega = async () => { rows = await api('/e/' + nome); desenha(); };
   $('#busca', main).oninput = e => { filtro = e.target.value; desenha(); };
   $('#exp', main).onclick = () => baixa(nome + '.csv', toCSV(rows, E.f.map(f => [f.k, f.l])));
+  $('#expx', main).onclick = () => { if (typeof XLSX === 'undefined') return toast('Leitor de planilhas indisponível (internet?). Use o CSV.', 'bad'); const cols = E.f.map(f => [f.k, f.l]); const ws = XLSX.utils.json_to_sheet(rows.map(r => Object.fromEntries(cols.map(c => [c[1], r[c[0]] ?? '']))), { header: cols.map(c => c[1]) }); const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, nome); XLSX.writeFile(wb, nome + '.xlsx'); };
+  if ($('#of', main)) $('#of', main).onclick = (ev) => confirma('Baixar a tabela oficial vigente (NCM ou CFOP) e acrescentar à sua empresa? Códigos que você já tem são mantidos.', async () => { const b = ev.target; await rodando(b, async () => { try { const r = await api('/tabelas/oficiais', { m: 'POST', b: { tipo: E.oficial } }); toast(`Tabela carregada: ${r.novos} códigos novos (de ${r.total}).`, 'ok'); recarrega(); } catch (e) { falha(e); } }); }, 'Carregar');
   if ($('#novo', main)) $('#novo', main).onclick = () => form(null);
   if ($('#imp', main)) $('#imp', main).onclick = () => importar(nome, recarrega);
   function form(reg) {
@@ -275,7 +280,7 @@ async function viewPainel(main) {
   <div class="grid g2"><div class="card"><div class="kpil">Vendas do mês (pedidos)</div><div class="kpi">${money(p.vendas_mes)}</div></div><div class="card"><div class="kpil">Notas de demo emitidas no mês</div><div class="kpi">${p.notas_mes}</div></div>
   <div class="card"><div class="kpil">A receber</div><div class="kpi">${money(p.receber)}</div></div><div class="card"><div class="kpil">A pagar</div><div class="kpi">${money(p.pagar)}</div></div>
   <div class="card"><div class="kpil">Contas atrasadas</div><div class="kpi ${p.atrasadas ? 'bad' : ''}">${p.atrasadas}</div></div><div class="card"><div class="kpil">Estoque baixo</div><div class="kpi ${p.estoque_baixo ? 'warn' : ''}">${p.estoque_baixo}</div></div></div>
-  ${!p.tab_ncm || !p.tab_cfop ? `<div class="aviso">Tabelas fiscais ainda vazias: ${!p.tab_ncm ? 'NCM ' : ''}${!p.tab_cfop ? 'CFOP ' : ''}— importe em <a href="#/ncm_tab">Fiscal</a>. O sistema não inventa dados fiscais.</div>` : ''}
+  ${!p.tab_ncm || !p.tab_cfop ? `<div class="aviso">Tabelas fiscais ainda vazias: ${!p.tab_ncm ? 'NCM ' : ''}${!p.tab_cfop ? 'CFOP ' : ''}— carregue em <a href="#/ncm_tab">NCM</a> e <a href="#/cfop_tab">CFOP</a> (botão "Carregar tabela oficial"). O sistema não inventa dados fiscais.</div>` : ''}
   ${pode('admin') ? '<p><button class="btn" id="ex">Criar dados de exemplo (fictícios)</button></p>' : ''}
   <h3 style="margin-top:1rem">Últimas atividades</h3><div class="tw"><table>${p.atividades.map(a => `<tr><td>${fdt(a.quando)}</td><td>${esc(a.usuario)}</td><td>${esc(a.acao)} <span class="mut">${esc(a.detalhe)}</span></td></tr>`).join('') || '<tr><td class="mut">Sem atividades.</td></tr>'}</table></div>`;
   if ($('#ex', main)) $('#ex', main).onclick = async () => { try { await api('/exemplo', { m: 'POST' }); toast('Exemplo fictício criado (1 cliente e 1 produto).', 'ok'); route(); } catch (e) { falha(e); } };
